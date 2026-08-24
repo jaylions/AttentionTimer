@@ -1,0 +1,7 @@
+# 빌드 산출물 — build.sh 로 생성됨
+AttentionTimer.app/
+*.o
+*.dSYM/
+
+# macOS
+.DS_Store
