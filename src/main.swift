@@ -175,37 +175,68 @@ final class Watcher {
 // ───────────────────────── State ─────────────────────────
 
 enum Phase { case idle, focusing, paused, finished }
+enum Mood  { case sleeping, working, angry, happy }
 
-struct PillState {
+struct PetState {
     var phase: Phase = .idle
     var remaining: TimeInterval = 25 * 60
     var total: TimeInterval = 25 * 60
-    var alerting = false                 // 지금 딴짓 중 (빨간 상태)
+    var alerting = false
     var alertApp = ""
     var alertDetail = ""
-    var alertRunSeconds: TimeInterval = 0    // 이번 딴짓이 이어진 시간
-    var sessionDistracted: TimeInterval = 0  // 이번 세션 누적 딴짓
+    var alertRunSeconds: TimeInterval = 0
+    var bubble = ""                          // 말풍선 대사 (빈 문자열이면 안 띄움)
+    var sessionDistracted: TimeInterval = 0
     var sessionWarnings = 0
     var todayWarnings = 0
     var todayDistracted: TimeInterval = 0
     var hovering = false
-    var pulse: Double = 0
+    var anim: Double = 0
 }
 
-// ───────────────────────── Pill view ─────────────────────────
-
-final class PillView: NSView {
-    var state = PillState()
+// ───────────────────────── Desk pet view ─────────────────────────
+//
+//   ╭──────────────────╮
+//   │   ◔  24:13       │   ← 타이머 (위)
+//   ╰──────────────────╯
+//     ╭──────────────╮
+//     │ 지금 뭐 하는데 │     ← 말풍선
+//     ╰───────▽──────╯
+//          (╯°□°)╯          ← 전신 캐릭터
+//
+final class PetView: NSView {
+    var state = PetState()
     var onPrimary: () -> Void = {}
     var onReset:   () -> Void = {}
     var onStop:    () -> Void = {}
 
-    private var dragOrigin: NSPoint?
-    private var dragged = false
+    // 레이아웃 (창 크기 고정, 바닥 기준)
+    static let winW: CGFloat = 280, winH: CGFloat = 212
+    private var badgeRect  = NSRect(x: 40, y: 174, width: 200, height: 36)
+    private var petRect    = NSRect(x: 101, y: 2, width: 78, height: 104)
+    private var bubbleRect = NSRect.zero      // 매 프레임 계산
+
     private var btnPrimary = NSRect.zero
     private var btnReset   = NSRect.zero
     private var btnStop    = NSRect.zero
+    private var cachedKey  = ""            // 말풍선 텍스트 레이아웃 캐시
+    private var cachedSize = NSSize.zero
+    private var dragOrigin: NSPoint?
+    private var dragged = false
     private var tracking: NSTrackingArea?
+
+    // 팔레트
+    // 레퍼런스 이미지 팔레트
+    private let skin     = NSColor(srgbRed: 0.96, green: 0.84, blue: 0.73, alpha: 1)
+    private let skinDark = NSColor(srgbRed: 0.90, green: 0.75, blue: 0.63, alpha: 1)
+    private let hairC    = NSColor(srgbRed: 0.29, green: 0.18, blue: 0.13, alpha: 1)
+    private let hairHi   = NSColor(srgbRed: 0.38, green: 0.25, blue: 0.18, alpha: 1)
+    private let hoodie   = NSColor(srgbRed: 0.16, green: 0.13, blue: 0.12, alpha: 1)
+    private let hoodieHi = NSColor(srgbRed: 0.22, green: 0.19, blue: 0.17, alpha: 1)
+    private let cream    = NSColor(srgbRed: 0.93, green: 0.89, blue: 0.83, alpha: 1)
+    private let blush    = NSColor(srgbRed: 0.91, green: 0.58, blue: 0.51, alpha: 1)
+    private let outline  = NSColor(srgbRed: 0.14, green: 0.10, blue: 0.08, alpha: 1)
+    private let ink      = NSColor(srgbRed: 0.11, green: 0.09, blue: 0.08, alpha: 1)
 
     override var isFlipped: Bool { false }
 
@@ -217,13 +248,27 @@ final class PillView: NSView {
                                owner: self, userInfo: nil)
         addTrackingArea(t); tracking = t
     }
-    override func mouseEntered(with e: NSEvent) { state.hovering = true;  needsDisplay = true; window?.invalidateShadow() }
-    override func mouseExited(with e: NSEvent)  { state.hovering = false; needsDisplay = true; window?.invalidateShadow() }
+    override func mouseEntered(with e: NSEvent) { state.hovering = true;  needsDisplay = true }
+    override func mouseExited(with e: NSEvent)  { state.hovering = false; needsDisplay = true }
 
-    // ── palette ──
-    private var calm: Bool { !state.alerting }
+    /// 투명한 부분은 클릭이 뒤쪽 앱으로 통과해야 한다 (안 그러면 데스크가 막힌다)
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let p = convert(point, from: superview)
+        if badgeRect.contains(p) || petRect.contains(p) { return self }
+        if !bubbleRect.isEmpty && bubbleRect.contains(p) { return self }
+        return nil
+    }
+
+    private var mood: Mood {
+        if state.alerting { return .angry }
+        switch state.phase {
+        case .finished: return .happy
+        case .focusing: return .working
+        default:        return .sleeping
+        }
+    }
     private var accent: NSColor {
-        if state.alerting { return .white }
+        if state.alerting { return NSColor(srgbRed: 1.0, green: 0.42, blue: 0.42, alpha: 1) }
         switch state.phase {
         case .paused:   return NSColor(srgbRed: 0.99, green: 0.76, blue: 0.30, alpha: 1)
         case .finished: return NSColor(srgbRed: 0.45, green: 0.87, blue: 0.65, alpha: 1)
@@ -233,132 +278,340 @@ final class PillView: NSView {
     }
 
     override func draw(_ dirty: NSRect) {
-        let ctx = NSGraphicsContext.current!.cgContext
-        ctx.clear(bounds)
+        NSGraphicsContext.current!.cgContext.clear(bounds)
+        let t = state.anim
+        drawBubble(t)
+        drawBadge(t)
+        drawPet(in: petRect, mood: mood, t: t)
+    }
 
-        // 딴짓 중이면 알약이 살짝 커지며 숨쉰다
-        let breathe = state.alerting ? (sin(state.pulse * .pi * 2) * 0.5 + 0.5) : 0
-        let inset: CGFloat = state.alerting ? 4 - CGFloat(breathe) * 3.0 : 5
-        let pill = bounds.insetBy(dx: inset, dy: inset)
-        let radius = pill.height / 2
-        let path = NSBezierPath(roundedRect: pill, xRadius: radius, yRadius: radius)
+    // ── 말풍선 ──
+    private func drawBubble(_ t: Double) {
+        bubbleRect = .zero
+        let text = state.bubble
+        guard !text.isEmpty else { return }
 
-        // 배경
-        if state.alerting {
-            let hot = 0.58 + breathe * 0.22
-            NSColor(srgbRed: CGFloat(hot), green: 0.10, blue: 0.13, alpha: 0.97).setFill()
-        } else {
-            NSColor(srgbRed: 0.06, green: 0.06, blue: 0.075, alpha: 0.90).setFill()
-        }
-        path.fill()
-
-        // 테두리
-        path.lineWidth = state.alerting ? 1.5 : 0.75
-        (state.alerting
-            ? NSColor(white: 1, alpha: 0.35 + CGFloat(breathe) * 0.35)
-            : NSColor(white: 1, alpha: 0.13)).setStroke()
-        path.stroke()
-
-        // 바닥 진행 바 (알약 모양으로 클립)
-        ctx.saveGState()
-        path.addClip()
-        let frac = state.total > 0 ? max(0, min(1, 1 - state.remaining / state.total)) : 0
-        let barH: CGFloat = 3
-        NSColor(white: 1, alpha: 0.08).setFill()
-        NSRect(x: pill.minX, y: pill.minY, width: pill.width, height: barH).fill()
-        accent.withAlphaComponent(state.alerting ? 0.95 : 0.75).setFill()
-        NSRect(x: pill.minX, y: pill.minY, width: pill.width * CGFloat(frac), height: barH).fill()
-        ctx.restoreGState()
-
-        // ── 링 ──
-        let ringR: CGFloat = 11
-        let ringC = NSPoint(x: pill.minX + 15 + ringR, y: pill.midY)
-        NSColor(white: 1, alpha: 0.14).setStroke()
-        let bg = NSBezierPath(); bg.appendArc(withCenter: ringC, radius: ringR, startAngle: 0, endAngle: 360)
-        bg.lineWidth = 2.5; bg.stroke()
-
-        let left = state.total > 0 ? max(0, min(1, state.remaining / state.total)) : 0
-        if left > 0.001 {
-            let arc = NSBezierPath()
-            arc.appendArc(withCenter: ringC, radius: ringR,
-                          startAngle: 90, endAngle: 90 - 360 * CGFloat(left), clockwise: true)
-            arc.lineWidth = 2.5; arc.lineCapStyle = .round
-            accent.setStroke(); arc.stroke()
-        }
-        if state.phase == .paused {
-            accent.setFill()
-            NSRect(x: ringC.x - 4, y: ringC.y - 4, width: 2.5, height: 8).fill()
-            NSRect(x: ringC.x + 1.5, y: ringC.y - 4, width: 2.5, height: 8).fill()
-        } else if state.alerting {
-            NSColor.white.setFill()
-            NSBezierPath(ovalIn: NSRect(x: ringC.x - 3.5, y: ringC.y - 3.5, width: 7, height: 7)).fill()
-        }
-
-        // ── 시간 ──
-        let timeFont = NSFont.monospacedDigitSystemFont(ofSize: 21, weight: .semibold)
-        let timeStr = state.phase == .finished ? "완료" : mmss(state.remaining)
-        let timeAttr: [NSAttributedString.Key: Any] = [
-            .font: state.phase == .finished ? NSFont.systemFont(ofSize: 19, weight: .semibold) : timeFont,
-            .foregroundColor: state.alerting ? NSColor.white : NSColor(white: 0.97, alpha: 1)
+        let font = NSFont.systemFont(ofSize: 12.5, weight: state.alerting ? .bold : .medium)
+        let maxW: CGFloat = 236
+        let ps = NSMutableParagraphStyle()
+        ps.alignment = .center
+        ps.lineBreakMode = .byWordWrapping
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: state.alerting ? NSColor.white : ink,
+            .paragraphStyle: ps
         ]
-        let timeSize = timeStr.size(withAttributes: timeAttr)
-        let timeX = ringC.x + ringR + 12
-        timeStr.draw(at: NSPoint(x: timeX, y: pill.midY - timeSize.height / 2 + 0.5), withAttributes: timeAttr)
+        let ns = text as NSString
+        // 대사는 몇 초에 한 번 바뀌는데 화면은 초당 30번 그린다 → 레이아웃은 캐시
+        let key = text + (state.alerting ? "!" : "")
+        if key != cachedKey {
+            var b = ns.boundingRect(with: NSSize(width: maxW - 26, height: 60),
+                                    options: [.usesLineFragmentOrigin], attributes: attrs)
+            b.size.width = min(ceil(b.width), maxW - 26)
+            cachedSize = b.size
+            cachedKey = key
+        }
+        let box = NSRect(origin: .zero, size: cachedSize)
 
-        // ── 오른쪽: 호버 시 버튼, 아니면 상태 텍스트 ──
-        let rightEdge = pill.maxX - 13
+        let w = max(76, box.width + 26)
+        let h = max(32, ceil(box.height) + 18)
+        let tailH: CGFloat = 7
+        let x = petRect.midX - w/2
+        let y = petRect.maxY + 6 + tailH
+        let r = NSRect(x: x, y: y, width: w, height: h)
+        bubbleRect = r.insetBy(dx: -2, dy: -tailH)
+
+        // 살짝 떠다니는 느낌
+        let bob = CGFloat(sin(t * 1.6)) * 1.0
+        let rr = r.offsetBy(dx: 0, dy: bob)
+
+        let path = NSBezierPath(roundedRect: rr, xRadius: 11, yRadius: 11)
+        // 꼬리
+        let tip = NSPoint(x: petRect.midX, y: rr.minY - tailH)
+        let tail = NSBezierPath()
+        tail.move(to: NSPoint(x: petRect.midX - 7, y: rr.minY + 1))
+        tail.line(to: tip)
+        tail.line(to: NSPoint(x: petRect.midX + 7, y: rr.minY + 1))
+        tail.close()
+
+        (state.alerting ? NSColor(srgbRed: 0.80, green: 0.13, blue: 0.16, alpha: 0.98)
+                        : NSColor(srgbRed: 0.99, green: 0.99, blue: 0.98, alpha: 0.97)).setFill()
+        path.fill(); tail.fill()
+        (state.alerting ? NSColor(white: 1, alpha: 0.55) : NSColor(white: 0, alpha: 0.18)).setStroke()
+        path.lineWidth = 1; path.stroke()
+
+        ns.draw(with: NSRect(x: rr.minX + 13, y: rr.minY + (h - box.height)/2,
+                             width: w - 26, height: box.height + 2),
+                options: [.usesLineFragmentOrigin], attributes: attrs)
+    }
+
+    // ── 타이머 배지 ──
+    private func drawBadge(_ t: Double) {
+        let r = badgeRect
+        let path = NSBezierPath(roundedRect: r, xRadius: r.height/2, yRadius: r.height/2)
+        NSColor(srgbRed: 0.06, green: 0.06, blue: 0.075, alpha: 0.92).setFill()
+        path.fill()
+        NSColor(white: 1, alpha: state.alerting ? 0.30 : 0.13).setStroke()
+        path.lineWidth = 1; path.stroke()
+
+        // 진행 링
+        let ringR: CGFloat = 10
+        let c = NSPoint(x: r.minX + 15 + ringR, y: r.midY)
+        NSColor(white: 1, alpha: 0.15).setStroke()
+        let bg = NSBezierPath(); bg.appendArc(withCenter: c, radius: ringR, startAngle: 0, endAngle: 360)
+        bg.lineWidth = 2.4; bg.stroke()
+        let left = state.phase == .finished ? 1
+                 : (state.total > 0 ? max(0, min(1, state.remaining / state.total)) : 0)
+        if left > 0.001 {
+            let a = NSBezierPath()
+            a.appendArc(withCenter: c, radius: ringR, startAngle: 90,
+                        endAngle: 90 - 360 * CGFloat(left), clockwise: true)
+            a.lineWidth = 2.4; a.lineCapStyle = .round
+            accent.setStroke(); a.stroke()
+        }
+
+        // 시간
+        let str = state.phase == .finished ? "완료" : mmss(state.remaining)
+        let font = state.phase == .finished
+            ? NSFont.systemFont(ofSize: 17, weight: .semibold)
+            : NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .semibold)
+        let attr: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: state.alerting ? NSColor(white: 1, alpha: 0.5) : NSColor(white: 0.97, alpha: 1)
+        ]
+        let sz = str.size(withAttributes: attr)
+        let tx = c.x + ringR + 10
+        str.draw(at: NSPoint(x: tx, y: r.midY - sz.height/2 + 0.5), withAttributes: attr)
+
         btnPrimary = .zero; btnReset = .zero; btnStop = .zero
+        let rightEdge = r.maxX - 11
 
-        if state.hovering && !state.alerting {
-            let s: CGFloat = 24
-            btnStop    = NSRect(x: rightEdge - s,           y: pill.midY - s/2, width: s, height: s)
-            btnReset   = NSRect(x: btnStop.minX - s - 2,    y: pill.midY - s/2, width: s, height: s)
-            btnPrimary = NSRect(x: btnReset.minX - s - 2,   y: pill.midY - s/2, width: s, height: s)
-            let primaryName = (state.phase == .focusing) ? "pause.fill" : "play.fill"
-            drawGlyph(primaryName, in: btnPrimary, color: NSColor(white: 0.95, alpha: 1), size: 11)
-            drawGlyph("arrow.counterclockwise", in: btnReset, color: NSColor(white: 0.65, alpha: 1), size: 11)
-            drawGlyph("xmark", in: btnStop, color: NSColor(white: 0.65, alpha: 1), size: 10)
-        } else {
-            let label = statusText()
-            let attr: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11.5, weight: state.alerting ? .bold : .medium),
-                .foregroundColor: state.alerting
-                    ? NSColor(white: 1, alpha: 0.95)
-                    : NSColor(white: 0.62, alpha: 1)
-            ]
-            let sz = label.size(withAttributes: attr)
-            let maxX = rightEdge
-            let x = max(timeX + timeSize.width + 10, maxX - sz.width)
-            label.draw(at: NSPoint(x: x, y: pill.midY - sz.height / 2), withAttributes: attr)
-        }
-    }
-
-    private func statusText() -> String {
         if state.alerting {
-            let what = state.alertDetail.isEmpty ? state.alertApp : state.alertDetail
-            return "\(what) · \(mmss(state.alertRunSeconds)) 흘림"
-        }
-        switch state.phase {
-        case .idle:
-            if state.todayWarnings > 0 {
-                return "오늘 흔들림 \(state.todayWarnings)회 · \(compactDuration(state.todayDistracted))"
-            }
-            return "시작하려면 ▶"
-        case .focusing:
-            if state.sessionWarnings > 0 {
-                return "집중 중 · 흔들림 \(state.sessionWarnings)회"
-            }
-            return "집중 중"
-        case .paused:
-            return "일시정지"
-        case .finished:
-            return state.sessionWarnings == 0
-                ? "흔들림 없이 완주"
-                : "흔들림 \(state.sessionWarnings)회 · \(compactDuration(state.sessionDistracted))"
+            // 타이머 정지 표시
+            let px = tx + sz.width + 6
+            NSColor(white: 1, alpha: 0.5).setFill()
+            NSRect(x: px, y: r.midY - 5, width: 2.5, height: 10).fill()
+            NSRect(x: px + 4.5, y: r.midY - 5, width: 2.5, height: 10).fill()
+            let l = "멈춤"
+            let la: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .bold),
+                .foregroundColor: NSColor(srgbRed: 1.0, green: 0.55, blue: 0.55, alpha: 1)]
+            let ls = l.size(withAttributes: la)
+            l.draw(at: NSPoint(x: rightEdge - ls.width, y: r.midY - ls.height/2), withAttributes: la)
+        } else if state.hovering {
+            let sd: CGFloat = 24
+            btnStop    = NSRect(x: rightEdge - sd,           y: r.midY - sd/2, width: sd, height: sd)
+            btnReset   = NSRect(x: btnStop.minX - sd - 1,    y: r.midY - sd/2, width: sd, height: sd)
+            btnPrimary = NSRect(x: btnReset.minX - sd - 1,   y: r.midY - sd/2, width: sd, height: sd)
+            glyph(state.phase == .focusing ? "pause.fill" : "play.fill", btnPrimary, NSColor(white: 0.95, alpha: 1), 11)
+            glyph("arrow.counterclockwise", btnReset, NSColor(white: 0.62, alpha: 1), 11)
+            glyph("xmark", btnStop, NSColor(white: 0.62, alpha: 1), 10)
+        } else if state.sessionWarnings > 0 && state.phase == .focusing {
+            let l = "흔들림 \(state.sessionWarnings)"
+            let la: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .medium),
+                .foregroundColor: NSColor(white: 0.55, alpha: 1)]
+            let ls = l.size(withAttributes: la)
+            l.draw(at: NSPoint(x: rightEdge - ls.width, y: r.midY - ls.height/2), withAttributes: la)
         }
     }
 
-    private func drawGlyph(_ name: String, in rect: NSRect, color: NSColor, size: CGFloat) {
+    // ── 캐릭터 (전신) ── 갈색 바가지머리 + 큰 눈 + 볼터치 + 검은 후드집업
+    private func drawPet(in box: NSRect, mood: Mood, t: Double) {
+        var dx: CGFloat = 0, dy: CGFloat = 0
+        switch mood {
+        case .working:  dy = CGFloat(sin(t * 2.4)) * 1.2
+        case .angry:    dx = CGFloat(sin(t * 32)) * 2.2
+                        dy = CGFloat(abs(sin(t * 7))) * 1.8
+        case .happy:    dy = CGFloat(abs(sin(t * 4.5))) * 5.0
+        case .sleeping: dy = CGFloat(sin(t * 1.2)) * 0.9
+        }
+        let cx = box.midX + dx
+        let base = box.minY + dy
+
+        func stroke(_ p: NSBezierPath, _ w: CGFloat = 1.7) {
+            outline.setStroke(); p.lineWidth = w; p.stroke()
+        }
+        func fillStroke(_ p: NSBezierPath, _ c: NSColor, _ w: CGFloat = 1.7) {
+            c.setFill(); p.fill(); stroke(p, w)
+        }
+
+        // 바닥 그림자
+        let shrink = 1 - min(0.4, dy / 12)
+        NSColor(white: 0, alpha: 0.20).setFill()
+        NSBezierPath(ovalIn: NSRect(x: box.midX - 24 * shrink, y: box.minY - 1,
+                                    width: 48 * shrink, height: 8)).fill()
+
+        // ── 다리 ──
+        for sx in [-11.0, 11.0] {
+            fillStroke(NSBezierPath(roundedRect: NSRect(x: cx + CGFloat(sx) - 6.5, y: base + 1,
+                                                        width: 13, height: 15),
+                                    xRadius: 5, yRadius: 5), hoodieHi, 1.5)
+        }
+
+        // ── 팔 (후드집업 소매) ──
+        var armL: CGFloat = 0, armR: CGFloat = 0
+        switch mood {
+        case .working:  armL = CGFloat(sin(t * 9)) * 3;  armR = CGFloat(sin(t * 9 + .pi)) * 3
+        case .angry:    armL = 13; armR = 13
+        case .happy:    armL = 15; armR = 15
+        case .sleeping: break
+        }
+        let bodyY = base + 12
+        for (sx, off) in [(-27.0, armL), (18.0, armR)] {
+            fillStroke(NSBezierPath(roundedRect: NSRect(x: cx + CGFloat(sx), y: bodyY + 6 + off,
+                                                        width: 11, height: 26),
+                                    xRadius: 5.5, yRadius: 5.5), hoodie, 1.5)
+        }
+
+        // ── 몸통 (후드집업) ──
+        let bodyW: CGFloat = 50, bodyH: CGFloat = 42
+        fillStroke(NSBezierPath(roundedRect: NSRect(x: cx - bodyW/2, y: bodyY,
+                                                    width: bodyW, height: bodyH),
+                                xRadius: 12, yRadius: 12), hoodie, 1.8)
+
+        // 후드 (목 뒤로 넘어간 부분)
+        fillStroke(NSBezierPath(roundedRect: NSRect(x: cx - 22, y: bodyY + bodyH - 14,
+                                                    width: 44, height: 18),
+                                xRadius: 9, yRadius: 9), hoodieHi, 1.5)
+
+        // 끈 두 가닥
+        cream.setStroke()
+        for sx in [-6.0, 6.0] {
+            let p = NSBezierPath()
+            p.move(to: NSPoint(x: cx + CGFloat(sx), y: bodyY + bodyH - 8))
+            p.line(to: NSPoint(x: cx + CGFloat(sx), y: bodyY + bodyH - 20))
+            p.lineWidth = 2.2; p.lineCapStyle = .round; p.stroke()
+        }
+
+        // 가슴 로고
+        let logo = "031" as NSString
+        let la: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9, weight: .heavy),
+            .foregroundColor: cream]
+        let lsz = logo.size(withAttributes: la)
+        logo.draw(at: NSPoint(x: cx - lsz.width/2, y: bodyY + 7), withAttributes: la)
+
+        // ── 귀 ──
+        let headCY = bodyY + bodyH + 14
+        for sx in [-28.0, 28.0] {
+            fillStroke(NSBezierPath(ovalIn: NSRect(x: cx + CGFloat(sx) - 5, y: headCY - 13,
+                                                   width: 10, height: 13)), skinDark, 1.5)
+        }
+
+        // ── 얼굴 ──
+        let headW: CGFloat = 56, headH: CGFloat = 52
+        let head = NSRect(x: cx - headW/2, y: headCY - headH/2, width: headW, height: headH)
+        fillStroke(NSBezierPath(roundedRect: head, xRadius: 20, yRadius: 20), skin, 1.9)
+
+        // ── 머리카락 (바가지머리) ──
+        // 한 덩어리로 합쳐 그린다 (앞머리 바닥 = headCY+4, 눈보다 확실히 위)
+        let hairPath = NSBezierPath()
+        hairPath.appendRoundedRect(NSRect(x: cx - 31, y: headCY + 4, width: 62, height: 20),
+                                   xRadius: 11, yRadius: 11)                        // 앞머리
+        hairPath.appendOval(in: NSRect(x: cx - 30, y: headCY + 2, width: 60, height: 40))   // 정수리 돔
+        hairPath.appendRoundedRect(NSRect(x: cx - 31, y: headCY - 8, width: 12, height: 26),
+                                   xRadius: 6, yRadius: 6)                          // 왼쪽 옆머리
+        hairPath.appendRoundedRect(NSRect(x: cx + 19, y: headCY - 8, width: 12, height: 26),
+                                   xRadius: 6, yRadius: 6)                          // 오른쪽 옆머리
+        hairPath.windingRule = .nonZero
+        hairC.setFill(); hairPath.fill()
+        // 정수리 하이라이트
+        hairHi.setFill()
+        NSBezierPath(ovalIn: NSRect(x: cx - 18, y: headCY + 28, width: 16, height: 7)).fill()
+
+        // ── 눈 / 볼 / 입 ──
+        let eyeY = headCY - 5
+        let eyeDX: CGFloat = 11
+
+        // 볼터치
+        blush.withAlphaComponent(0.75).setFill()
+        for sx in [-18.0, 18.0] {
+            NSBezierPath(ovalIn: NSRect(x: cx + CGFloat(sx) - 7, y: eyeY - 13,
+                                        width: 14, height: 9)).fill()
+        }
+
+        ink.setFill(); ink.setStroke()
+        switch mood {
+        case .sleeping:
+            for sx in [-eyeDX, eyeDX] {   // 감은 눈 (아래로 볼록)
+                let p = NSBezierPath()
+                p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY + 3),
+                            radius: 5, startAngle: 200, endAngle: 340)
+                p.lineWidth = 2.0; p.lineCapStyle = .round; p.stroke()
+            }
+            let m = NSBezierPath()
+            m.move(to: NSPoint(x: cx - 3, y: eyeY - 12)); m.line(to: NSPoint(x: cx + 3, y: eyeY - 12))
+            m.lineWidth = 1.8; m.lineCapStyle = .round; m.stroke()
+            let za: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 12, weight: .heavy),
+                .foregroundColor: NSColor(white: 0.98, alpha: 0.85)]
+            ("z" as NSString).draw(at: NSPoint(x: cx + 26, y: headCY + 20 + CGFloat(sin(t * 1.5)) * 2),
+                                   withAttributes: za)
+
+        case .working:
+            let blink = t.truncatingRemainder(dividingBy: 4.1) < 0.14
+            for sx in [-eyeDX, eyeDX] {
+                if blink {
+                    let p = NSBezierPath()
+                    p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY + 3),
+                                radius: 5, startAngle: 200, endAngle: 340)
+                    p.lineWidth = 2.0; p.lineCapStyle = .round; p.stroke()
+                } else {
+                    ink.setFill()
+                    NSBezierPath(ovalIn: NSRect(x: cx + sx - 5, y: eyeY - 6,
+                                                width: 10, height: 13)).fill()
+                    NSColor.white.setFill()   // 눈동자 하이라이트
+                    NSBezierPath(ovalIn: NSRect(x: cx + sx - 1, y: eyeY + 2.5,
+                                                width: 3.4, height: 3.4)).fill()
+                }
+            }
+            ink.setStroke()
+            let m = NSBezierPath()    // 옅은 미소
+            m.appendArc(withCenter: NSPoint(x: cx, y: eyeY - 8), radius: 5, startAngle: 215, endAngle: 325)
+            m.lineWidth = 1.8; m.lineCapStyle = .round; m.stroke()
+
+        case .angry:
+            for sx in [-eyeDX, eyeDX] {
+                ink.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cx + sx - 5, y: eyeY - 6, width: 10, height: 12)).fill()
+            }
+            ink.setStroke()
+            for side in [-1.0, 1.0] {   // 치켜올린 눈썹
+                let sg = CGFloat(side)
+                let p = NSBezierPath()
+                p.move(to: NSPoint(x: cx + sg * 19, y: eyeY + 13))
+                p.line(to: NSPoint(x: cx + sg * 6, y: eyeY + 6))
+                p.lineWidth = 2.4; p.lineCapStyle = .round; p.stroke()
+            }
+            ink.setFill()   // 벌린 입
+            NSBezierPath(ovalIn: NSRect(x: cx - 6, y: eyeY - 15, width: 12, height: 9)).fill()
+            // 분노 마크
+            let ax = cx + 22, ay = headCY + 20
+            NSColor(srgbRed: 0.93, green: 0.22, blue: 0.20, alpha: 1).setStroke()
+            for a in stride(from: 0.0, to: 180.0, by: 45.0) {
+                let rad = a * .pi / 180
+                let p = NSBezierPath()
+                p.move(to: NSPoint(x: ax - cos(rad) * 6, y: ay - sin(rad) * 6))
+                p.line(to: NSPoint(x: ax + cos(rad) * 6, y: ay + sin(rad) * 6))
+                p.lineWidth = 2.0; p.lineCapStyle = .round; p.stroke()
+            }
+
+        case .happy:
+            ink.setStroke()
+            for sx in [-eyeDX, eyeDX] {   // ^ ^
+                let p = NSBezierPath()
+                p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY - 1),
+                            radius: 5.5, startAngle: 30, endAngle: 150)
+                p.lineWidth = 2.2; p.lineCapStyle = .round; p.stroke()
+            }
+            let m = NSBezierPath()        // 활짝 웃는 입
+            m.appendArc(withCenter: NSPoint(x: cx, y: eyeY - 6), radius: 7, startAngle: 200, endAngle: 340)
+            m.lineWidth = 2.2; m.lineCapStyle = .round; m.stroke()
+        }
+    }
+
+    private func glyph(_ name: String, _ rect: NSRect, _ color: NSColor, _ size: CGFloat) {
         let cfg = NSImage.SymbolConfiguration(pointSize: size, weight: .bold)
             .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
         guard let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
@@ -368,19 +621,14 @@ final class PillView: NSView {
                             width: s.width, height: s.height))
     }
 
-    // ── 드래그 이동 + 클릭 ──
-    override func mouseDown(with e: NSEvent) {
-        dragOrigin = NSEvent.mouseLocation
-        dragged = false
-    }
+    // ── 드래그 + 클릭 ──
+    override func mouseDown(with e: NSEvent) { dragOrigin = NSEvent.mouseLocation; dragged = false }
     override func mouseDragged(with e: NSEvent) {
         guard let start = dragOrigin, let win = window else { return }
         let now = NSEvent.mouseLocation
-        let dx = now.x - start.x, dy = now.y - start.y
-        if abs(dx) + abs(dy) > 3 { dragged = true }
+        if abs(now.x - start.x) + abs(now.y - start.y) > 3 { dragged = true }
         var o = win.frame.origin
-        o.x += e.deltaX
-        o.y -= e.deltaY
+        o.x += e.deltaX; o.y -= e.deltaY
         win.setFrameOrigin(o)
     }
     override func mouseUp(with e: NSEvent) {
@@ -390,12 +638,11 @@ final class PillView: NSView {
         if btnPrimary.contains(p) { onPrimary() }
         else if btnReset.contains(p) { onReset() }
         else if btnStop.contains(p) { onStop() }
-        else if !state.hovering { onPrimary() }
+        else if petRect.contains(p) { onPrimary() }      // 얘를 누르면 시작/정지
     }
     private func savePosition() {
         guard let f = window?.frame else { return }
-        let d = ["x": f.origin.x, "y": f.origin.y]
-        try? JSONEncoder().encode(d).write(to: posURL)
+        try? JSONEncoder().encode(["x": f.origin.x, "y": f.origin.y]).write(to: posURL)
     }
 }
 
@@ -405,7 +652,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var cfg = Config.load()
     let watcher = Watcher()
     var panel: NSPanel!
-    var pill: PillView!
+    var pet: PetView!
     var statusItem: NSStatusItem!
     var ticker: Timer?
 
@@ -414,10 +661,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastTick = Date()
     var badSince: Date?          // 유예 카운트 시작
     var lastLoggedHost = ""      // logAllSites용 중복 제거
+    var frame = 0
+    var tickHz: Double = 0
+
+    /// 상태에 따라 타이머 주기를 바꾼다.
+    /// 화났을 땐 부들부들 떨어야 하니 30Hz, 자고 있을 땐 8Hz면 충분하다.
+    /// (상시 실행 앱이라 안 깨우는 게 배터리에 제일 낫다)
+    func retimeIfNeeded() {
+        let hz: Double
+        if s.alerting                                       { hz = 30 }
+        else if s.phase == .focusing || pet?.state.hovering == true { hz = 20 }
+        else                                                { hz = 8 }
+        guard hz != tickHz else { return }
+        tickHz = hz
+        ticker?.invalidate()
+        let t = Timer(timeInterval: 1.0/hz, repeats: true) { [weak self] _ in self?.tick() }
+        t.tolerance = 1.0 / hz * 0.15
+        RunLoop.main.add(t, forMode: .common)
+        ticker = t
+    }
+    var sayText = ""
+    var sayUntil = Date.distantPast
+    var saidHalf = false, saidLast5 = false
+
+    func say(_ line: String, for d: TimeInterval = 5) {
+        sayText = line; sayUntil = Date().addingTimeInterval(d)
+    }
+
+    static let idleLines = ["오늘도 해볼까?", "준비되면 눌러", "같이 하자", "나 여기 있어"]
+    static let workLines = ["집중 중…", "잘하고 있어", "나도 하는 중", "이대로 가자", "옆에 있을게"]
+
+    /// 지금 말풍선에 띄울 대사
+    func currentBubble() -> String {
+        if s.alerting { return angryLine }
+        switch s.phase {
+        case .finished:
+            return s.sessionWarnings == 0 ? "한 번도 안 흔들렸어!" : "끝! 흔들림 \(s.sessionWarnings)회"
+        case .idle:
+            let i = Int(Date().timeIntervalSince1970 / 20) % AppDelegate.idleLines.count
+            return AppDelegate.idleLines[i]
+        case .paused:
+            return "기다릴게"
+        case .focusing:
+            if Date() < sayUntil { return sayText }
+            let i = Int(Date().timeIntervalSince1970 / 25) % AppDelegate.workLines.count
+            return AppDelegate.workLines[i]
+        }
+    }
+    var lastMenuTitle = ""
+
+    /// 화났을 때 굴러가는 대사
+    static let angryLines = [
+        "야.", "어디 가", "지금 뭐 하는데", "보고 있다", "돌아와",
+        "나 혼자 일하는데", "진심이야?", "시간 안 가는 거 보이지"
+    ]
+    var angryLine: String {  // 화났을 때
+        guard s.alerting else { return "" }
+        let target = s.alertDetail.isEmpty ? s.alertApp : s.alertDetail
+        if s.alertRunSeconds < 3.5 { return "\(target)?!" }
+        let i = Int((s.alertRunSeconds - 3.5) / 2.5) % AppDelegate.angryLines.count
+        return AppDelegate.angryLines[i]
+    }
     var alertStart: Date?        // 실제 딴짓 판정된 시각
     var sessionStart: Date?
 
-    var s = PillState()
+    var s = PetState()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -429,16 +737,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(appSwitched(_:)),
             name: NSWorkspace.didActivateApplicationNotification, object: nil)
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.tick() }
-        RunLoop.main.add(ticker!, forMode: .common)
+        retimeIfNeeded()
         refresh()
     }
 
-    @objc func appSwitched(_ n: Notification) { evaluate(force: true) }
+    @objc func appSwitched(_ n: Notification) {
+        watcher.sample(cfg, active: s.phase == .focusing)
+        evaluate()
+    }
 
     // ── panel ──
     func buildPanel() {
-        let W: CGFloat = 344, H: CGFloat = 52
+        let W = PetView.winW, H = PetView.winH
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: W, height: H),
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
@@ -447,16 +757,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         p.backgroundColor = .clear
         p.isOpaque = false
-        p.hasShadow = true
+        p.hasShadow = false   // 그림자는 캐릭터 발밑에 직접 그린다
         p.hidesOnDeactivate = false
         p.ignoresMouseEvents = false
 
-        pill = PillView(frame: NSRect(x: 0, y: 0, width: W, height: H))
-        pill.wantsLayer = true
-        pill.onPrimary = { [weak self] in self?.togglePrimary() }
-        pill.onReset   = { [weak self] in self?.resetSession() }
-        pill.onStop    = { [weak self] in self?.endSession(completed: false) }
-        p.contentView = pill
+        pet = PetView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        pet.wantsLayer = true
+        pet.onPrimary = { [weak self] in self?.togglePrimary() }
+        pet.onReset   = { [weak self] in self?.resetSession() }
+        pet.onStop    = { [weak self] in self?.endSession(completed: false) }
+        p.contentView = pet
 
         // 위치 복원, 없으면 화면 상단 중앙
         var origin: NSPoint
@@ -468,6 +778,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let vf = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
             origin = NSPoint(x: vf.midX - W / 2, y: vf.maxY - H - 6)
         }
+        // 예전에 저장된 좌표가 화면 밖이면 끌어온다 (창 크기가 바뀌었을 수 있음)
+        let vf2 = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+        origin.x = min(max(origin.x, vf2.minX + 4), vf2.maxX - W - 4)
+        origin.y = min(max(origin.y, vf2.minY + 4), vf2.maxY - H - 4)
         p.setFrameOrigin(origin)
         p.orderFrontRegardless()
         panel = p
@@ -643,6 +957,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             sessionStart = Date()
             endDate = Date().addingTimeInterval(s.remaining)
             lastLoggedHost = ""
+            saidHalf = false; saidLast5 = false
+            say("좋아, 시작하자", for: 4)
             s.phase = .focusing
         case .focusing:
             s.phase = .paused
@@ -650,6 +966,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             clearAlert()
         case .paused:
             endDate = Date().addingTimeInterval(s.remaining)
+            say("다시 가보자", for: 3)
             s.phase = .focusing
         }
         refresh()
@@ -699,35 +1016,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
-    // ── tick ──
+    // ── tick ── 30fps. 애니메이션은 매 프레임, 무거운 판정은 0.2초마다.
     func tick() {
+        frame &+= 1
         let now = Date()
         let dt = now.timeIntervalSince(lastTick)
         lastTick = now
+        s.anim = now.timeIntervalSince1970
 
-        watcher.sample(cfg, active: s.phase == .focusing)
+        let heavy = (frame % 6 == 0)
+        if heavy { watcher.sample(cfg, active: s.phase == .focusing) }
 
-        if s.phase == .focusing, let end = endDate {
+        if s.phase == .focusing, var end = endDate {
+            if heavy { evaluate() }
+
+            if s.alerting {
+                // 딴짓하는 동안엔 시간이 줄지 않는다 — 종료 시각을 그만큼 뒤로 민다.
+                // 돌아오지 않으면 세션은 끝나지 않는다.
+                end = end.addingTimeInterval(dt)
+                endDate = end
+                s.sessionDistracted += dt
+                s.todayDistracted += dt
+                s.alertRunSeconds += dt
+            }
             s.remaining = end.timeIntervalSinceNow
+
+            if !s.alerting {
+                if !saidHalf, s.remaining <= s.total / 2 { saidHalf = true; say("절반 왔다") }
+                if !saidLast5, s.remaining <= 300 { saidLast5 = true; say("5분 남았어, 조금만") }
+            }
             if s.remaining <= 0 {
                 s.remaining = 0
                 NSSound(named: "Glass")?.play()
                 endSession(completed: true)
                 return
             }
-            evaluate(force: false)
-            if s.alerting {
-                s.sessionDistracted += dt
-                s.todayDistracted += dt
-                s.alertRunSeconds += dt
-            }
         }
-        s.pulse = now.timeIntervalSince1970.truncatingRemainder(dividingBy: 1.7) / 1.7
+        s.bubble = currentBubble()
+        retimeIfNeeded()
         refresh()
     }
 
     /// 딴짓 판정 — 유예시간을 넘겨야 실제 경고
-    func evaluate(force: Bool) {
+    func evaluate() {
         guard s.phase == .focusing else { clearAlert(); return }
         let v = watcher.check(cfg)
 
@@ -771,34 +1102,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // ── render ──
+    // 상시 떠있는 앱이라 매 프레임 다 하면 CPU를 잡아먹는다.
+    // 재그리기 / 윈도우 최상단 재요청 / 메뉴바 갱신을 각각 필요한 만큼만.
     func refresh() {
-        pill.state.phase = s.phase
-        pill.state.remaining = s.remaining
-        pill.state.total = s.total
-        pill.state.alerting = s.alerting
-        pill.state.alertApp = s.alertApp
-        pill.state.alertDetail = s.alertDetail
-        pill.state.alertRunSeconds = s.alertRunSeconds
-        pill.state.sessionDistracted = s.sessionDistracted
-        pill.state.sessionWarnings = s.sessionWarnings
-        pill.state.todayWarnings = s.todayWarnings
-        pill.state.todayDistracted = s.todayDistracted
-        pill.state.pulse = s.pulse
-        pill.needsDisplay = true
+        let every = s.alerting ? 1 : 2      // 30Hz→30fps / 20Hz→10fps / 8Hz→4fps
 
-        // 항상 또렷하게. 딴짓 중에는 특히 절대 흐려지지 않는다.
-        if s.phase == .focusing || s.phase == .paused { panel.orderFrontRegardless() }
+        if frame % every == 0 {
+            pet.state.phase = s.phase
+            pet.state.remaining = s.remaining
+            pet.state.total = s.total
+            pet.state.alerting = s.alerting
+            pet.state.alertApp = s.alertApp
+            pet.state.alertDetail = s.alertDetail
+            pet.state.alertRunSeconds = s.alertRunSeconds
+            pet.state.bubble = s.bubble
+            pet.state.sessionDistracted = s.sessionDistracted
+            pet.state.sessionWarnings = s.sessionWarnings
+            pet.state.todayWarnings = s.todayWarnings
+            pet.state.todayDistracted = s.todayDistracted
+            pet.state.anim = s.anim
+            pet.needsDisplay = true
+        }
 
-        // 메뉴바
-        if let b = statusItem.button {
-            let txt: String
-            switch s.phase {
-            case .focusing: txt = s.alerting ? "🔴 \(mmss(s.remaining))" : mmss(s.remaining)
-            case .paused:   txt = "⏸ \(mmss(s.remaining))"
-            case .finished: txt = "✓"
-            case .idle:     txt = "◷"
-            }
-            b.attributedTitle = NSAttributedString(string: txt, attributes: [
+        // 최상단 재요청은 1초에 한 번이면 충분
+        if frame % 30 == 0, s.phase == .focusing || s.phase == .paused {
+            panel.orderFrontRegardless()
+        }
+
+        // 메뉴바는 글자가 실제로 바뀔 때만
+        let txt: String
+        switch s.phase {
+        case .focusing: txt = s.alerting ? "🔴 \(mmss(s.remaining))" : mmss(s.remaining)
+        case .paused:   txt = "⏸ \(mmss(s.remaining))"
+        case .finished: txt = "✓"
+        case .idle:     txt = "◷"
+        }
+        if txt != lastMenuTitle {
+            lastMenuTitle = txt
+            statusItem?.button?.attributedTitle = NSAttributedString(string: txt, attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             ])
         }
