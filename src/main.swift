@@ -226,17 +226,11 @@ final class PetView: NSView {
     private var tracking: NSTrackingArea?
 
     // 팔레트
-    // 레퍼런스 이미지 팔레트
-    private let skin     = NSColor(srgbRed: 0.96, green: 0.84, blue: 0.73, alpha: 1)
-    private let skinDark = NSColor(srgbRed: 0.90, green: 0.75, blue: 0.63, alpha: 1)
-    private let hairC    = NSColor(srgbRed: 0.29, green: 0.18, blue: 0.13, alpha: 1)
-    private let hairHi   = NSColor(srgbRed: 0.38, green: 0.25, blue: 0.18, alpha: 1)
-    private let hoodie   = NSColor(srgbRed: 0.16, green: 0.13, blue: 0.12, alpha: 1)
-    private let hoodieHi = NSColor(srgbRed: 0.22, green: 0.19, blue: 0.17, alpha: 1)
-    private let cream    = NSColor(srgbRed: 0.93, green: 0.89, blue: 0.83, alpha: 1)
-    private let blush    = NSColor(srgbRed: 0.91, green: 0.58, blue: 0.51, alpha: 1)
-    private let outline  = NSColor(srgbRed: 0.14, green: 0.10, blue: 0.08, alpha: 1)
-    private let ink      = NSColor(srgbRed: 0.11, green: 0.09, blue: 0.08, alpha: 1)
+    // 흰 강아지 — 스티커풍 손그림
+    private let furC    = NSColor(srgbRed: 0.995, green: 0.99, blue: 0.98, alpha: 1)
+    private let furShade = NSColor(srgbRed: 0.90, green: 0.89, blue: 0.87, alpha: 1)
+    private let ink     = NSColor(srgbRed: 0.11, green: 0.10, blue: 0.10, alpha: 1)
+    private let tongue  = NSColor(srgbRed: 0.95, green: 0.52, blue: 0.55, alpha: 1)
 
     override var isFlipped: Bool { false }
 
@@ -416,137 +410,127 @@ final class PetView: NSView {
         }
     }
 
-    // ── 캐릭터 (전신) ── 갈색 바가지머리 + 큰 눈 + 볼터치 + 검은 후드집업
+    /// 손그림 느낌의 뭉실뭉실한 덩어리 — 반지름을 각도에 따라 흔들어 털 실루엣을 만든다
+    private func fluff(_ cx: CGFloat, _ cy: CGFloat, _ rx: CGFloat, _ ry: CGFloat,
+                       bumps: Int = 9, amp: CGFloat = 0.085, phase: CGFloat = 0) -> NSBezierPath {
+        let p = NSBezierPath()
+        let n = 56
+        for i in 0...n {
+            let th = CGFloat(i) / CGFloat(n) * .pi * 2
+            let k = 1 + amp * sin(CGFloat(bumps) * th + phase)
+            let pt = NSPoint(x: cx + cos(th) * rx * k, y: cy + sin(th) * ry * k)
+            i == 0 ? p.move(to: pt) : p.line(to: pt)
+        }
+        p.close()
+        return p
+    }
+
+    // ── 캐릭터 (전신) ── 흰 강아지, 스티커풍
     private func drawPet(in box: NSRect, mood: Mood, t: Double) {
         var dx: CGFloat = 0, dy: CGFloat = 0
         switch mood {
-        case .working:  dy = CGFloat(sin(t * 2.4)) * 1.2
-        case .angry:    dx = CGFloat(sin(t * 32)) * 2.2
-                        dy = CGFloat(abs(sin(t * 7))) * 1.8
-        case .happy:    dy = CGFloat(abs(sin(t * 4.5))) * 5.0
-        case .sleeping: dy = CGFloat(sin(t * 1.2)) * 0.9
+        case .working:  dy = CGFloat(sin(t * 2.4)) * 1.4
+        case .angry:    dx = CGFloat(sin(t * 32)) * 2.4
+                        dy = CGFloat(abs(sin(t * 7))) * 2.0
+        case .happy:    dy = CGFloat(abs(sin(t * 4.5))) * 6.0
+        case .sleeping: dy = CGFloat(sin(t * 1.2)) * 1.0
         }
         let cx = box.midX + dx
         let base = box.minY + dy
+        let lw: CGFloat = 2.0
 
-        func stroke(_ p: NSBezierPath, _ w: CGFloat = 1.7) {
-            outline.setStroke(); p.lineWidth = w; p.stroke()
-        }
-        func fillStroke(_ p: NSBezierPath, _ c: NSColor, _ w: CGFloat = 1.7) {
-            c.setFill(); p.fill(); stroke(p, w)
+        func draw(_ p: NSBezierPath, _ fill: NSColor = furC, _ width: CGFloat = 2.0) {
+            fill.setFill(); p.fill()
+            ink.setStroke(); p.lineWidth = width; p.lineJoinStyle = .round; p.stroke()
         }
 
         // 바닥 그림자
-        let shrink = 1 - min(0.4, dy / 12)
-        NSColor(white: 0, alpha: 0.20).setFill()
-        NSBezierPath(ovalIn: NSRect(x: box.midX - 24 * shrink, y: box.minY - 1,
-                                    width: 48 * shrink, height: 8)).fill()
+        let shrink = 1 - min(0.45, dy / 12)
+        NSColor(white: 0, alpha: 0.16).setFill()
+        NSBezierPath(ovalIn: NSRect(x: box.midX - 25 * shrink, y: box.minY - 2,
+                                    width: 50 * shrink, height: 8)).fill()
 
-        // ── 다리 ──
-        for sx in [-11.0, 11.0] {
-            fillStroke(NSBezierPath(roundedRect: NSRect(x: cx + CGFloat(sx) - 6.5, y: base + 1,
-                                                        width: 13, height: 15),
-                                    xRadius: 5, yRadius: 5), hoodieHi, 1.5)
+        // ── 뒷다리 / 발 ──
+        for sx in [-13.0, 13.0] {
+            draw(fluff(cx + CGFloat(sx), base + 6, 11, 7, bumps: 6, amp: 0.10, phase: 1.2), furC, lw)
         }
 
-        // ── 팔 (후드집업 소매) ──
-        var armL: CGFloat = 0, armR: CGFloat = 0
+        // ── 몸통 ──
+        let bodyCY = base + 26
+        draw(fluff(cx, bodyCY, 22, 20, bumps: 10, amp: 0.09), furC, lw)
+
+        // ── 앞발 (일할 땐 번갈아 움직임 = 타자 치는 느낌) ──
+        var pawL: CGFloat = 0, pawR: CGFloat = 0
         switch mood {
-        case .working:  armL = CGFloat(sin(t * 9)) * 3;  armR = CGFloat(sin(t * 9 + .pi)) * 3
-        case .angry:    armL = 13; armR = 13
-        case .happy:    armL = 15; armR = 15
+        case .working: pawL = CGFloat(sin(t * 9)) * 3;  pawR = CGFloat(sin(t * 9 + .pi)) * 3
+        case .angry:   pawL = 16; pawR = 16          // 만세하듯 번쩍
+        case .happy:   pawL = 18; pawR = 18
         case .sleeping: break
         }
-        let bodyY = base + 12
-        for (sx, off) in [(-27.0, armL), (18.0, armR)] {
-            fillStroke(NSBezierPath(roundedRect: NSRect(x: cx + CGFloat(sx), y: bodyY + 6 + off,
-                                                        width: 11, height: 26),
-                                    xRadius: 5.5, yRadius: 5.5), hoodie, 1.5)
+        for (sx, off) in [(-20.0, pawL), (20.0, pawR)] {
+            draw(fluff(cx + CGFloat(sx), bodyCY + 2 + off, 9, 8, bumps: 6, amp: 0.11, phase: 2.0), furC, lw)
         }
 
-        // ── 몸통 (후드집업) ──
-        let bodyW: CGFloat = 50, bodyH: CGFloat = 42
-        fillStroke(NSBezierPath(roundedRect: NSRect(x: cx - bodyW/2, y: bodyY,
-                                                    width: bodyW, height: bodyH),
-                                xRadius: 12, yRadius: 12), hoodie, 1.8)
+        // ── 머리 ──
+        let headCY = base + 62
+        draw(fluff(cx, headCY, 27, 25, bumps: 11, amp: 0.075, phase: 0.6), furC, lw)
 
-        // 후드 (목 뒤로 넘어간 부분)
-        fillStroke(NSBezierPath(roundedRect: NSRect(x: cx - 22, y: bodyY + bodyH - 14,
-                                                    width: 44, height: 18),
-                                xRadius: 9, yRadius: 9), hoodieHi, 1.5)
-
-        // 끈 두 가닥
-        cream.setStroke()
-        for sx in [-6.0, 6.0] {
-            let p = NSBezierPath()
-            p.move(to: NSPoint(x: cx + CGFloat(sx), y: bodyY + bodyH - 8))
-            p.line(to: NSPoint(x: cx + CGFloat(sx), y: bodyY + bodyH - 20))
-            p.lineWidth = 2.2; p.lineCapStyle = .round; p.stroke()
+        // ── 귀 (양옆으로 축 늘어짐, 화나거나 신나면 들림) ──
+        var earLift: CGFloat = 0, earOut: CGFloat = 0
+        switch mood {
+        case .angry:  earLift = 13; earOut = 4
+        case .happy:  earLift = 15; earOut = 5
+        case .working: earLift = CGFloat(sin(t * 2.4)) * 1.5
+        case .sleeping: earLift = CGFloat(sin(t * 1.2)) * 1.0
         }
-
-        // 가슴 로고
-        let logo = "031" as NSString
-        let la: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 9, weight: .heavy),
-            .foregroundColor: cream]
-        let lsz = logo.size(withAttributes: la)
-        logo.draw(at: NSPoint(x: cx - lsz.width/2, y: bodyY + 7), withAttributes: la)
-
-        // ── 귀 ──
-        let headCY = bodyY + bodyH + 14
-        for sx in [-28.0, 28.0] {
-            fillStroke(NSBezierPath(ovalIn: NSRect(x: cx + CGFloat(sx) - 5, y: headCY - 13,
-                                                   width: 10, height: 13)), skinDark, 1.5)
+        for side in [-1.0, 1.0] {
+            let sg = CGFloat(side)
+            draw(fluff(cx + sg * (26 + earOut), headCY - 6 + earLift, 9, 18,
+                       bumps: 7, amp: 0.12, phase: 1.5), furC, lw)
         }
 
         // ── 얼굴 ──
-        let headW: CGFloat = 56, headH: CGFloat = 52
-        let head = NSRect(x: cx - headW/2, y: headCY - headH/2, width: headW, height: headH)
-        fillStroke(NSBezierPath(roundedRect: head, xRadius: 20, yRadius: 20), skin, 1.9)
+        let eyeY = headCY + 4
+        let eyeDX: CGFloat = 8.5
+        ink.setFill(); ink.setStroke()
 
-        // ── 머리카락 (바가지머리) ──
-        // 한 덩어리로 합쳐 그린다 (앞머리 바닥 = headCY+4, 눈보다 확실히 위)
-        let hairPath = NSBezierPath()
-        hairPath.appendRoundedRect(NSRect(x: cx - 31, y: headCY + 4, width: 62, height: 20),
-                                   xRadius: 11, yRadius: 11)                        // 앞머리
-        hairPath.appendOval(in: NSRect(x: cx - 30, y: headCY + 2, width: 60, height: 40))   // 정수리 돔
-        hairPath.appendRoundedRect(NSRect(x: cx - 31, y: headCY - 8, width: 12, height: 26),
-                                   xRadius: 6, yRadius: 6)                          // 왼쪽 옆머리
-        hairPath.appendRoundedRect(NSRect(x: cx + 19, y: headCY - 8, width: 12, height: 26),
-                                   xRadius: 6, yRadius: 6)                          // 오른쪽 옆머리
-        hairPath.windingRule = .nonZero
-        hairC.setFill(); hairPath.fill()
-        // 정수리 하이라이트
-        hairHi.setFill()
-        NSBezierPath(ovalIn: NSRect(x: cx - 18, y: headCY + 28, width: 16, height: 7)).fill()
-
-        // ── 눈 / 볼 / 입 ──
-        let eyeY = headCY - 5
-        let eyeDX: CGFloat = 11
-
-        // 볼터치
-        blush.withAlphaComponent(0.75).setFill()
-        for sx in [-18.0, 18.0] {
-            NSBezierPath(ovalIn: NSRect(x: cx + CGFloat(sx) - 7, y: eyeY - 13,
-                                        width: 14, height: 9)).fill()
+        func nose() {
+            ink.setFill()
+            NSBezierPath(ovalIn: NSRect(x: cx - 3.5, y: eyeY - 11, width: 7, height: 5.5)).fill()
+        }
+        /// ω 모양 입
+        func smallMouth() {
+            ink.setStroke()
+            let m = NSBezierPath()
+            m.appendArc(withCenter: NSPoint(x: cx - 3, y: eyeY - 15), radius: 3.2,
+                        startAngle: 200, endAngle: 340)
+            m.appendArc(withCenter: NSPoint(x: cx + 3, y: eyeY - 15), radius: 3.2,
+                        startAngle: 200, endAngle: 340)
+            m.lineWidth = 1.7; m.lineCapStyle = .round; m.stroke()
+        }
+        /// 헤벌린 입 + 혀
+        func openMouth(_ w: CGFloat, _ h: CGFloat) {
+            let r = NSRect(x: cx - w/2, y: eyeY - 12 - h, width: w, height: h)
+            let p = NSBezierPath(roundedRect: r, xRadius: w/2, yRadius: h/2)
+            ink.setFill(); p.fill()
+            tongue.setFill()
+            NSBezierPath(ovalIn: NSRect(x: cx - w*0.28, y: r.minY + 1.5,
+                                        width: w*0.56, height: h*0.45)).fill()
         }
 
-        ink.setFill(); ink.setStroke()
         switch mood {
         case .sleeping:
-            for sx in [-eyeDX, eyeDX] {   // 감은 눈 (아래로 볼록)
+            for sx in [-eyeDX, eyeDX] {          // 감은 눈
                 let p = NSBezierPath()
-                p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY + 3),
-                            radius: 5, startAngle: 200, endAngle: 340)
+                p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY + 3), radius: 4.5,
+                            startAngle: 200, endAngle: 340)
                 p.lineWidth = 2.0; p.lineCapStyle = .round; p.stroke()
             }
-            let m = NSBezierPath()
-            m.move(to: NSPoint(x: cx - 3, y: eyeY - 12)); m.line(to: NSPoint(x: cx + 3, y: eyeY - 12))
-            m.lineWidth = 1.8; m.lineCapStyle = .round; m.stroke()
+            nose(); smallMouth()
             let za: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 12, weight: .heavy),
-                .foregroundColor: NSColor(white: 0.98, alpha: 0.85)]
-            ("z" as NSString).draw(at: NSPoint(x: cx + 26, y: headCY + 20 + CGFloat(sin(t * 1.5)) * 2),
+                .foregroundColor: NSColor(white: 0.99, alpha: 0.9)]
+            ("z" as NSString).draw(at: NSPoint(x: cx + 27, y: headCY + 16 + CGFloat(sin(t * 1.5)) * 2),
                                    withAttributes: za)
 
         case .working:
@@ -554,40 +538,34 @@ final class PetView: NSView {
             for sx in [-eyeDX, eyeDX] {
                 if blink {
                     let p = NSBezierPath()
-                    p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY + 3),
-                                radius: 5, startAngle: 200, endAngle: 340)
+                    p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY + 3), radius: 4.5,
+                                startAngle: 200, endAngle: 340)
                     p.lineWidth = 2.0; p.lineCapStyle = .round; p.stroke()
                 } else {
                     ink.setFill()
-                    NSBezierPath(ovalIn: NSRect(x: cx + sx - 5, y: eyeY - 6,
-                                                width: 10, height: 13)).fill()
-                    NSColor.white.setFill()   // 눈동자 하이라이트
-                    NSBezierPath(ovalIn: NSRect(x: cx + sx - 1, y: eyeY + 2.5,
-                                                width: 3.4, height: 3.4)).fill()
+                    NSBezierPath(ovalIn: NSRect(x: cx + sx - 3.2, y: eyeY - 2,
+                                                width: 6.4, height: 7.6)).fill()
                 }
             }
-            ink.setStroke()
-            let m = NSBezierPath()    // 옅은 미소
-            m.appendArc(withCenter: NSPoint(x: cx, y: eyeY - 8), radius: 5, startAngle: 215, endAngle: 325)
-            m.lineWidth = 1.8; m.lineCapStyle = .round; m.stroke()
+            nose(); smallMouth()
 
         case .angry:
             for sx in [-eyeDX, eyeDX] {
                 ink.setFill()
-                NSBezierPath(ovalIn: NSRect(x: cx + sx - 5, y: eyeY - 6, width: 10, height: 12)).fill()
+                NSBezierPath(ovalIn: NSRect(x: cx + sx - 3.4, y: eyeY - 2,
+                                            width: 6.8, height: 7.2)).fill()
             }
             ink.setStroke()
-            for side in [-1.0, 1.0] {   // 치켜올린 눈썹
+            for side in [-1.0, 1.0] {            // 치켜올린 눈썹
                 let sg = CGFloat(side)
                 let p = NSBezierPath()
-                p.move(to: NSPoint(x: cx + sg * 19, y: eyeY + 13))
-                p.line(to: NSPoint(x: cx + sg * 6, y: eyeY + 6))
-                p.lineWidth = 2.4; p.lineCapStyle = .round; p.stroke()
+                p.move(to: NSPoint(x: cx + sg * 15, y: eyeY + 13))
+                p.line(to: NSPoint(x: cx + sg * 4.5, y: eyeY + 6.5))
+                p.lineWidth = 2.3; p.lineCapStyle = .round; p.stroke()
             }
-            ink.setFill()   // 벌린 입
-            NSBezierPath(ovalIn: NSRect(x: cx - 6, y: eyeY - 15, width: 12, height: 9)).fill()
+            nose(); openMouth(15, 11)
             // 분노 마크
-            let ax = cx + 22, ay = headCY + 20
+            let ax = cx + 22, ay = headCY + 19
             NSColor(srgbRed: 0.93, green: 0.22, blue: 0.20, alpha: 1).setStroke()
             for a in stride(from: 0.0, to: 180.0, by: 45.0) {
                 let rad = a * .pi / 180
@@ -599,15 +577,13 @@ final class PetView: NSView {
 
         case .happy:
             ink.setStroke()
-            for sx in [-eyeDX, eyeDX] {   // ^ ^
+            for sx in [-eyeDX, eyeDX] {          // ^ ^
                 let p = NSBezierPath()
-                p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY - 1),
-                            radius: 5.5, startAngle: 30, endAngle: 150)
+                p.appendArc(withCenter: NSPoint(x: cx + sx, y: eyeY), radius: 5,
+                            startAngle: 30, endAngle: 150)
                 p.lineWidth = 2.2; p.lineCapStyle = .round; p.stroke()
             }
-            let m = NSBezierPath()        // 활짝 웃는 입
-            m.appendArc(withCenter: NSPoint(x: cx, y: eyeY - 6), radius: 7, startAngle: 200, endAngle: 340)
-            m.lineWidth = 2.2; m.lineCapStyle = .round; m.stroke()
+            nose(); openMouth(17, 12)
         }
     }
 
